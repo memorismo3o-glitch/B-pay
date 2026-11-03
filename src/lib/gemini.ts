@@ -1,4 +1,11 @@
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+// 버전 고정 모델은 신규 사용자에게 막히기도 해서 최신 별칭을 쓴다.
+// 지명 추출은 단순한 작업이라 빠른 lite 모델을 먼저 쓴다
+const MODEL = process.env.GEMINI_MODEL || "gemini-flash-lite-latest";
+const FALLBACK_MODEL = "gemini-flash-latest";
+
+// "성수1가1동", "마포구 서교동", "강남역"처럼 이미 지명만 입력한 경우는 Gemini를 부르지 않는다
+const PLAIN_PLACE = /^[가-힣0-9]+(시|군|구|읍|면|동|가|리|로|길|역)?( [가-힣0-9]+(시|군|구|읍|면|동|가|리|로|길|역))*$/;
+const PLACE_SUFFIX = /(시|군|구|읍|면|동|가|리|로|길|역)$/;
 
 const FILLER = /(근처|주변|부근|일대|에\s*있는|의|식당|음식점|맛집|가게|목록|지도|보여\s*줘|보여\s*주세요|찾아\s*줘|알려\s*줘|검색|좀|요)$/;
 
@@ -19,6 +26,8 @@ export function extractPlaceSimple(query: string): string | null {
  */
 export async function extractPlace(query: string): Promise<string | null> {
   const key = process.env.GEMINI_API_KEY;
+  const trimmed = query.trim().replace(/\s+/g, " ");
+  if (trimmed.length <= 20 && PLAIN_PLACE.test(trimmed) && PLACE_SUFFIX.test(trimmed)) return trimmed;
   if (!key) return extractPlaceSimple(query);
 
   const prompt = [
@@ -29,34 +38,38 @@ export async function extractPlace(query: string): Promise<string | null> {
     `문장: ${JSON.stringify(query)}`,
   ].join("\n");
 
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0,
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: "OBJECT",
-              properties: { place: { type: "STRING", nullable: true } },
-              required: ["place"],
-            },
-          },
-        }),
-        signal: AbortSignal.timeout(10_000),
-      },
-    );
-    if (!res.ok) throw new Error(`Gemini ${res.status}`);
-    const data = await res.json();
-    const text: string = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
-    const place = JSON.parse(text).place;
-    return typeof place === "string" && place.trim() ? place.trim() : null;
-  } catch (err) {
-    console.error("extractPlace fallback:", err);
-    return extractPlaceSimple(query);
+  // 과부하(503) 등으로 실패하면 다음 모델로 한 번 더
+  for (const model of [MODEL, FALLBACK_MODEL]) {
+    try {
+      return await callGemini(key, model, prompt);
+    } catch (err) {
+      console.error(`extractPlace ${model} 실패:`, (err as Error).message);
+    }
   }
+  return extractPlaceSimple(query);
+}
+
+async function callGemini(key: string, model: string, prompt: string): Promise<string | null> {
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+    body: JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "OBJECT",
+          properties: { place: { type: "STRING", nullable: true } },
+          required: ["place"],
+        },
+      },
+    }),
+    signal: AbortSignal.timeout(6_000),
+  });
+  if (!res.ok) throw new Error(`Gemini ${res.status}`);
+  const data = await res.json();
+  const text: string = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
+  const place = JSON.parse(text).place;
+  return typeof place === "string" && place.trim() ? place.trim() : null;
 }

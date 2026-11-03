@@ -29,8 +29,11 @@ Supabase 키가 없으면 샘플 데이터 모드로 화면만 확인할 수 있
 ## 경계 수집기 (내 PC)
 
 1. Aside CLI 설치 (Aside 설정 > Developer, 또는 https://docs.aside.com/help/developers)
-2. `aside login --email <내 이메일>` 후 Aside 설정 > Account > Devices에서 승인
-3. `npm run worker` (상시) 또는 `npm run worker:once` (대기 중인 것만 처리)
+2. `aside account status`로 로그인 확인 (안 돼 있으면 `aside login --email <내 이메일>` 후 Aside 설정 > Account > Devices에서 승인)
+3. `node worker/collect.mjs --test 성수1가1동` 으로 수집만 단독 테스트 (DB 불필요)
+4. `npm run worker` (상시) 또는 `npm run worker:once` (대기 중인 것만 처리)
+
+수집은 `aside repl`로 네이버 지도를 열어 페이지가 받는 경계 응답(`/p/api/polygon`, GeoJSON)을 그대로 가져온다.
 
 수집기가 꺼져 있으면 새 동은 "수집 대기 중"으로 남고, 이미 수집된 동은 영향 없다.
 

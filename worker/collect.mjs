@@ -1,12 +1,13 @@
 // 동 경계 수집기 (내 PC에서 실행)
 // Supabase의 regions 테이블에서 status='pending'인 구획을 가져와
-// Aside CLI로 네이버 지도의 경계 폴리곤을 수집한 뒤 업로드한다.
+// Aside 브라우저(aside repl)로 네이버 지도의 경계 폴리곤을 수집한 뒤 업로드한다.
 //
-//   npm run worker        계속 대기하며 처리
-//   npm run worker:once   대기 중인 것만 처리하고 종료
+//   npm run worker                 계속 대기하며 처리
+//   npm run worker:once            대기 중인 것만 처리하고 종료
+//   node worker/collect.mjs --test 성수1가1동   DB 없이 수집만 해보고 결과 출력
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient } from "@supabase/supabase-js";
@@ -14,49 +15,76 @@ import { createClient } from "@supabase/supabase-js";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 loadEnv(join(ROOT, ".env.local"));
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const ASIDE_BIN = process.env.ASIDE_BIN || "aside";
 const POLL_MS = 5000;
-const ASIDE_TIMEOUT_MS = 6 * 60 * 1000;
+const ASIDE_TIMEOUT_MS = 150 * 1000; // aside repl 자체 제한은 120초
 const FALLBACK_RADIUS_M = 500;
-const TMP = join(ROOT, "worker", "tmp");
-
-if (!SUPABASE_URL || !SERVICE_KEY) {
-  console.error(".env.local에 NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY를 넣어 주세요.");
-  process.exit(1);
-}
-const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
-mkdirSync(TMP, { recursive: true });
+const RESULT_MARK = "__BPL_RESULT__";
 
 function loadEnv(file) {
   if (!existsSync(file)) return;
   for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-    if (m && !(m[1] in process.env)) process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
+    if (m && m[2].trim() && !(m[1] in process.env)) process.env[m[1]] = m[2].trim().replace(/^["']|["']$/g, "");
   }
 }
 
-function buildPrompt(name, outFile) {
-  return [
-    `네이버 지도(https://map.naver.com/p/search/${encodeURIComponent(name)})에서 "${name}"을(를) 검색해.`,
-    `검색 결과로 지도에 표시되는 행정구역 경계(폴리곤)의 좌표를 구해.`,
-    `좌표는 추측하거나 손으로 그리지 말고, 페이지가 받아오는 네트워크 응답(경계/geometry/polygon 좌표가 담긴 응답)에서 그대로 가져와.`,
-    `좌표계는 WGS84 경위도로 맞추고, 각 점은 [경도, 위도] 순서야.`,
-    `결과를 다음 파일에 JSON 하나만 저장해 (다른 텍스트 없이): ${outFile}`,
-    `형식: {"display_name": "네이버에 표시된 정식 이름 (예: 서울특별시 성동구 성수1가1동)",`,
-    `       "polygon": {"type": "Polygon", "coordinates": [[[경도, 위도], ...]]} 또는 MultiPolygon,`,
-    `       "center": [경도, 위도]}`,
-    `검색어가 행정구역이 아니어서 경계가 없으면 "polygon": null 로 두고 center만 채워.`,
-    `검색 결과가 전혀 없으면 {"error": "이유"} 를 저장해.`,
-    `로그인, 결제, 글쓰기 같은 다른 동작은 하지 마.`,
-  ].join("\n");
+// Aside 브라우저 안에서 실행되는 코드.
+// 1) 네이버 지도에서 검색 → 페이지가 부르는 /p/api/polygon 응답(GeoJSON)을 그대로 가져온다
+// 2) 경계가 없는 지명이면 네이버 플레이스 첫 결과의 좌표를 중심점으로 쓴다
+function replCode(name) {
+  return `
+const name = ${JSON.stringify(name)};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const result = { name };
+const page = await openTab("https://map.naver.com/p/search/" + encodeURIComponent(name));
+try {
+  let polyUrl = null;
+  for (let i = 0; i < 24 && !polyUrl; i++) {
+    await sleep(500);
+    polyUrl = await page.evaluate(() =>
+      performance.getEntriesByType("resource").map((e) => e.name).find((n) => n.includes("/p/api/polygon")) || null);
+  }
+  if (polyUrl) {
+    const got = await page.evaluate(async (u) => {
+      const r = await fetch(u, { credentials: "include" });
+      return { status: r.status, body: await r.text(), title: document.title };
+    }, polyUrl);
+    result.display_name = got.title.replace(/\\s*-\\s*네이버\\s*지도\\s*$/, "").trim() || null;
+    result.polygonStatus = got.status;
+    result.geojson = got.status === 200 ? JSON.parse(got.body) : null;
+  }
+} finally {
+  try { await page.close(); } catch {}
+}
+if (!result.geojson) {
+  const list = await openTab("https://pcmap.place.naver.com/place/list?query=" + encodeURIComponent(name) + "&x=126.978&y=37.5665&display=10&locale=ko");
+  try {
+    let first = null;
+    for (let i = 0; i < 16 && !first; i++) {
+      await sleep(500);
+      first = await list.evaluate(() => {
+        const st = window.__APOLLO_STATE__;
+        if (!st) return null;
+        const v = Object.values(st).find((v) => v && typeof v === "object" && v.x && v.y && v.name);
+        return v ? { name: v.name, x: Number(v.x), y: Number(v.y) } : null;
+      });
+    }
+    if (first) {
+      result.center = [first.x, first.y];
+      result.display_name = name + " (" + first.name + " 기준)";
+    }
+  } finally {
+    try { await list.close(); } catch {}
+  }
+}
+console.log(${JSON.stringify(RESULT_MARK)} + JSON.stringify(result));
+`;
 }
 
-function runAside(prompt) {
+function runRepl(code) {
   return new Promise((resolvePromise, reject) => {
-    const env = { ...process.env };
-    const child = spawn(ASIDE_BIN, [prompt], { env, windowsHide: true });
+    const child = spawn(ASIDE_BIN, ["repl", code], { windowsHide: true });
     let out = "";
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (out += d));
@@ -68,36 +96,40 @@ function runAside(prompt) {
       clearTimeout(timer);
       reject(new Error(`Aside 실행 실패 (${ASIDE_BIN}): ${err.message}`));
     });
-    child.on("close", (code) => {
+    child.on("close", () => {
       clearTimeout(timer);
-      code === 0 ? resolvePromise(out) : reject(new Error(`Aside 종료 코드 ${code}: ${out.slice(-500)}`));
+      const line = out.split(/\r?\n/).find((l) => l.includes(RESULT_MARK));
+      if (!line) return reject(new Error(`Aside 결과 없음: ${out.replace(/\x1b\[[0-9;]*m/g, "").slice(-400)}`));
+      resolvePromise(JSON.parse(line.slice(line.indexOf(RESULT_MARK) + RESULT_MARK.length)));
     });
   });
-}
-
-// EPSG:3857(웹 메르카토르) 좌표가 오면 경위도로 변환
-function to4326([x, y]) {
-  if (Math.abs(x) <= 180 && Math.abs(y) <= 90) return [x, y];
-  const lon = (x / 6378137) * (180 / Math.PI);
-  const lat = (2 * Math.atan(Math.exp(y / 6378137)) - Math.PI / 2) * (180 / Math.PI);
-  return [lon, lat];
 }
 
 const inKorea = ([lon, lat]) => lon > 124 && lon < 132 && lat > 33 && lat < 39.5;
 
 function cleanRing(ring) {
-  const pts = ring.map((p) => to4326(p.map(Number)));
+  const pts = ring.map((p) => [Number(p[0]), Number(p[1])]);
   if (pts.length < 3 || !pts.every(inKorea)) throw new Error("경계 좌표가 한국 범위를 벗어났습니다");
   const [f, l] = [pts[0], pts.at(-1)];
   if (f[0] !== l[0] || f[1] !== l[1]) pts.push([...f]);
   return pts;
 }
 
-function cleanPolygon(p) {
-  if (p?.type === "Polygon") return { type: "Polygon", coordinates: p.coordinates.map(cleanRing) };
-  if (p?.type === "MultiPolygon")
-    return { type: "MultiPolygon", coordinates: p.coordinates.map((poly) => poly.map(cleanRing)) };
-  throw new Error("polygon 형식이 올바르지 않습니다");
+/** 네이버 FeatureCollection → 하나의 Polygon/MultiPolygon */
+function toPolygon(geojson) {
+  const geoms = geojson?.type === "FeatureCollection"
+    ? geojson.features.map((f) => f.geometry)
+    : [geojson?.geometry ?? geojson];
+  const polys = [];
+  for (const g of geoms) {
+    if (g?.type === "Polygon") polys.push(g.coordinates);
+    else if (g?.type === "MultiPolygon") polys.push(...g.coordinates);
+  }
+  if (!polys.length) return null;
+  const cleaned = polys.map((poly) => poly.map(cleanRing));
+  return cleaned.length === 1
+    ? { type: "Polygon", coordinates: cleaned[0] }
+    : { type: "MultiPolygon", coordinates: cleaned };
 }
 
 function circle([lon, lat], radiusM, n = 48) {
@@ -111,26 +143,41 @@ function circle([lon, lat], radiusM, n = 48) {
   return { type: "Polygon", coordinates: [ring] };
 }
 
-async function collect(region) {
-  const outFile = join(TMP, `region-${region.id}.json`);
-  rmSync(outFile, { force: true });
-  console.log(`[${region.id}] "${region.name}" 수집 시작`);
-  await runAside(buildPrompt(region.name, outFile));
-  if (!existsSync(outFile)) throw new Error("Aside가 결과 파일을 만들지 않았습니다");
-
-  const raw = readFileSync(outFile, "utf8").trim().replace(/^```(?:json)?|```$/g, "");
-  const result = JSON.parse(raw);
-  if (result.error) throw new Error(`네이버 검색 결과 없음: ${result.error}`);
-
-  if (result.polygon) {
-    return { polygon: cleanPolygon(result.polygon), source: "naver", display_name: result.display_name ?? null };
+async function collect(name) {
+  const r = await runRepl(replCode(name));
+  const polygon = r.geojson && toPolygon(r.geojson);
+  if (polygon) return { polygon, source: "naver", display_name: r.display_name ?? null };
+  if (r.center && inKorea(r.center)) {
+    return { polygon: circle(r.center, FALLBACK_RADIUS_M), source: "radius", display_name: r.display_name ?? null };
   }
-  const center = result.center && to4326(result.center.map(Number));
-  if (center && inKorea(center)) {
-    return { polygon: circle(center, FALLBACK_RADIUS_M), source: "radius", display_name: result.display_name ?? null };
-  }
-  throw new Error("경계와 중심 좌표를 모두 찾지 못했습니다");
+  throw new Error("네이버 지도에서 경계와 위치를 모두 찾지 못했습니다");
 }
+
+// ---------- 테스트 모드 ----------
+if (process.argv.includes("--test")) {
+  const name = process.argv.slice(process.argv.indexOf("--test") + 1).join(" ") || "성수1가1동";
+  const r = await collect(name);
+  const rings = r.polygon.type === "Polygon" ? [r.polygon.coordinates[0]] : r.polygon.coordinates.map((p) => p[0]);
+  console.log(JSON.stringify({
+    name,
+    display_name: r.display_name,
+    source: r.source,
+    type: r.polygon.type,
+    rings: rings.length,
+    points: rings.reduce((n, ring) => n + ring.length, 0),
+    firstPoint: rings[0][0],
+  }, null, 1));
+  process.exit(0);
+}
+
+// ---------- 대기열 처리 ----------
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+if (!SUPABASE_URL || !SERVICE_KEY) {
+  console.error(".env.local에 NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY를 넣어 주세요.");
+  process.exit(1);
+}
+const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 
 async function processNext() {
   const { data: region, error } = await sb
@@ -152,8 +199,9 @@ async function processNext() {
     .select("id");
   if (!claimed?.length) return true;
 
+  console.log(`[${region.id}] "${region.name}" 수집 시작`);
   try {
-    const r = await collect(region);
+    const r = await collect(region.name);
     await sb
       .from("regions")
       .update({ ...r, status: "ready", error: null, stores_fetched_at: null, updated_at: new Date().toISOString() })
