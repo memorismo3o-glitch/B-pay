@@ -1,0 +1,105 @@
+:root {
+  --bg: #ffffff;
+  --fg: #111827;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --brand: #2563eb;
+  --neon: #39ff14;
+  --neon-glow: rgba(57, 255, 20, 0.85);
+  --unknown: #f97316;
+  --no: #9ca3af;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+}
+
+.app { display: flex; flex-direction: column; height: 100dvh; }
+
+.bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  padding: 12px 16px; border-bottom: 1px solid var(--line);
+}
+.logo { margin: 0; font-size: 20px; font-weight: 800; white-space: nowrap; }
+.logo span { color: var(--brand); }
+
+.search { display: flex; flex: 1; min-width: 260px; gap: 8px; }
+.search input {
+  flex: 1; min-width: 0; padding: 10px 14px; font-size: 16px;
+  border: 1px solid var(--line); border-radius: 10px; outline: none;
+}
+.search input:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15); }
+.search button {
+  padding: 10px 18px; font-size: 15px; font-weight: 700; color: #fff;
+  background: var(--brand); border: 0; border-radius: 10px; cursor: pointer;
+}
+.search button:disabled { opacity: 0.5; cursor: default; }
+
+.info {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+  padding: 8px 16px; font-size: 14px; border-bottom: 1px solid var(--line); background: #f9fafb;
+}
+.info-region em { font-weight: 400; color: var(--muted); font-style: normal; }
+.info-counts { color: var(--muted); }
+.c-yes { color: #15803d; }
+.c-no { color: var(--muted); }
+.info-notice { color: #b45309; }
+.info-error { color: #dc2626; }
+.info-demo { color: #7c3aed; }
+
+.map-area { position: relative; flex: 1; min-height: 0; }
+.map { position: absolute; inset: 0; }
+
+.legend {
+  position: absolute; left: 12px; bottom: 24px; z-index: 500;
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 12px; font-size: 13px;
+  background: rgba(255, 255, 255, 0.95); border-radius: 10px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+}
+.legend span { display: flex; align-items: center; gap: 8px; }
+.legend .pin { position: relative; width: 14px; height: 14px; }
+
+/* ---- 마커 ---- */
+.pin-wrap { background: none; border: 0; }
+.pin {
+  display: block; width: 16px; height: 16px; margin: 3px;
+  border-radius: 50%; background: var(--unknown);
+  border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+.pin--no { background: var(--no); opacity: 0.85; }
+.pin--yes {
+  background: #16a34a;
+  border: 3px solid var(--neon);
+  animation: neon-blink 1s ease-in-out infinite;
+}
+@keyframes neon-blink {
+  0%, 100% { border-color: var(--neon); box-shadow: 0 0 6px 3px var(--neon-glow), 0 0 14px 6px var(--neon-glow); }
+  50%      { border-color: rgba(57, 255, 20, 0.15); box-shadow: 0 0 0 0 rgba(57, 255, 20, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pin--yes { animation-duration: 2.5s; }
+}
+
+/* ---- 팝업 ---- */
+.popup { font-size: 13px; line-height: 1.45; }
+.popup-title { font-size: 15px; font-weight: 800; margin-bottom: 2px; }
+.popup-cat { color: var(--muted); }
+.popup-addr { color: var(--muted); margin-top: 2px; }
+.popup-state { margin-top: 8px; }
+.popup-when { margin-top: 2px; font-size: 11px; color: var(--muted); }
+.tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; background: #f3f4f6; color: var(--muted); }
+.tag--yes { background: #dcfce7; color: #15803d; font-weight: 700; }
+.tag--no { background: #e5e7eb; color: #4b5563; font-weight: 700; }
+.popup-actions { display: flex; gap: 6px; margin-top: 10px; }
+.btn {
+  flex: 1; padding: 8px 6px; font-size: 13px; font-weight: 700;
+  border-radius: 8px; border: 2px solid transparent; cursor: pointer; background: #f3f4f6;
+}
+.btn--yes { color: #15803d; border-color: #86efac; background: #f0fdf4; }
+.btn--no { color: #4b5563; border-color: #d1d5db; }
+.btn--yes.is-active { background: #16a34a; color: #fff; border-color: var(--neon); }
+.btn--no.is-active { background: #6b7280; color: #fff; border-color: #6b7280; }
